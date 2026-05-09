@@ -1,0 +1,1014 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <title>BaseCharter</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0F172A; font-family: 'Trebuchet MS', sans-serif; overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+    #root { min-height: 100vh; }
+    @media print {
+      .no-print { display: none !important; }
+      .print-page { page-break-before: always; }
+    }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef } = React;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const PITCH_TYPES = [
+{ id:“FB”, label:“Fastball”,  color:”#3B82F6” },
+{ id:“CB”, label:“Curveball”, color:”#F59E0B” },
+{ id:“SL”, label:“Slider”,    color:”#10B981” },
+{ id:“CH”, label:“Changeup”,  color:”#EC4899” },
+{ id:“CT”, label:“Cutter”,    color:”#8B5CF6” },
+{ id:“SI”, label:“Sinker”,    color:”#F97316” },
+{ id:“OT”, label:“Other”,     color:”#94A3B8” },
+];
+const PITCH_RESULTS = [“Ball”,“Strike (Looking)”,“Strike (Swinging)”,“Foul”,“In Play - Out”,“In Play - Hit”,“HBP”,“Wild Pitch”];
+const CONTACT_TYPES = [“Hard”,“Medium”,“Soft”];
+const AB_OUTCOMES = [
+“Single”,“Double”,“Triple”,“Home Run”,
+“Out - Groundout”,“Out - Flyout”,“Out - Lineout”,
+“Out - Sac Fly”,“Out - Sac Bunt”,“Out - Fielder’s Choice”,“Error”,
+];
+const FIELD_POS = [
+{id:“P”,x:50,y:55},{id:“C”,x:50,y:88},{id:“1B”,x:72,y:65},
+{id:“2B”,x:62,y:43},{id:“3B”,x:28,y:65},{id:“SS”,x:38,y:43},
+{id:“LF”,x:20,y:22},{id:“CF”,x:50,y:10},{id:“RF”,x:80,y:22},
+];
+const INNINGS = [1,2,3,4,5,6,7,8,9,“EXT”];
+
+const pc    = id => PITCH_TYPES.find(p=>p.id===id)?.color||”#888”;
+const label = id => PITCH_TYPES.find(p=>p.id===id)?.label||id;
+const IN_PLAY = r => r===“In Play - Out”||r===“In Play - Hit”;
+const IS_K    = r => r===“Strike (Looking)”||r===“Strike (Swinging)”;
+const IS_OUT  = (result, outcome) => {
+if (outcome) return ![“Single”,“Double”,“Triple”,“Home Run”].includes(outcome);
+return IS_K(result)||result===“In Play - Out”;
+};
+const IS_HIT  = (result, outcome) => {
+if (outcome) return [“Single”,“Double”,“Triple”,“Home Run”].includes(outcome);
+return result===“In Play - Hit”;
+};
+const AB_RESULT = p => p.abOutcome || (IS_K(p.result) ? (p.result===“Strike (Looking)”?“Kl”:“K”) : p.result) || “—”;
+
+// ── Storage ───────────────────────────────────────────────────────────────────
+function useStorage() {
+const [games, setGames] = useState(()=>{ try{return JSON.parse(localStorage.getItem(“bc_v6”)||”[]”);}catch{return[];} });
+const save = g => { setGames(g); localStorage.setItem(“bc_v6”, JSON.stringify(g)); };
+return { games, save };
+}
+
+// ── Strike Zone ───────────────────────────────────────────────────────────────
+function StrikeZone({ pitches=[], onTap, pending, interactive }) {
+const ref = useRef(null);
+const click = e => {
+if (!interactive||!pending) return;
+const r=ref.current.getBoundingClientRect();
+onTap({x:((e.clientX-r.left)/r.width)*100,y:((e.clientY-r.top)/r.height)*100});
+};
+return (
+<div style={{width:“100%”,aspectRatio:“1”}}>
+<svg ref={ref} viewBox=“0 0 100 100”
+style={{width:“100%”,height:“100%”,cursor:interactive&&pending?“crosshair”:“default”,border:“2px solid #334155”,borderRadius:10,background:”#0F172A”}}
+onClick={click}>
+<rect x="10" y="10" width="80" height="80" fill="none" stroke="#1E293B" strokeWidth="0.5"/>
+<rect x="25" y="25" width="50" height="50" fill="#0D1F0D" stroke="#475569" strokeWidth="1.5" strokeDasharray="4,2"/>
+<line x1="41.7" y1="25" x2="41.7" y2="75" stroke="#1E293B" strokeWidth="1"/>
+<line x1="58.3" y1="25" x2="58.3" y2="75" stroke="#1E293B" strokeWidth="1"/>
+<line x1="25" y1="41.7" x2="75" y2="41.7" stroke="#1E293B" strokeWidth="1"/>
+<line x1="25" y1="58.3" x2="75" y2="58.3" stroke="#1E293B" strokeWidth="1"/>
+<text x="50" y="8"  fill="#334155" fontSize="4.5" textAnchor="middle">AWAY</text>
+<text x="50" y="98" fill="#334155" fontSize="4.5" textAnchor="middle">IN</text>
+<text x="5"  y="52" fill="#334155" fontSize="3.5" textAnchor="middle">HIGH</text>
+<text x="95" y="52" fill="#334155" fontSize="3.5" textAnchor="middle">LOW</text>
+{pitches.map((p,i)=>p.location&&(
+<g key={i}>
+<circle cx={p.location.x} cy={p.location.y} r="6" fill={pc(p.pitchType)} opacity="0.92" stroke="rgba(255,255,255,0.2)" strokeWidth="0.5"/>
+<text x={p.location.x} y={p.location.y+2.2} fill="white" fontSize="5" textAnchor="middle" fontWeight="bold">{i+1}</text>
+</g>
+))}
+{interactive&&pending&&<text x="50" y="52" fill="#F59E0B" fontSize="6" textAnchor="middle" opacity="0.6" fontWeight="bold">TAP TO PLACE</text>}
+</svg>
+</div>
+);
+}
+
+// ── Spray Chart ───────────────────────────────────────────────────────────────
+// filled dot = hit, circle+X = out; color = pitch type
+function SprayChart({ plays=[], onTap, pending, interactive }) {
+const ref = useRef(null);
+const click = e => {
+if (!interactive||!pending) return;
+const r=ref.current.getBoundingClientRect();
+onTap({x:((e.clientX-r.left)/r.width)*100,y:((e.clientY-r.top)/r.height)*100});
+};
+return (
+<div style={{width:“100%”,aspectRatio:“1”}}>
+<svg ref={ref} viewBox=“0 0 100 100”
+style={{width:“100%”,height:“100%”,cursor:interactive&&pending?“crosshair”:“default”,border:“2px solid #334155”,borderRadius:10,background:”#0F172A”}}
+onClick={click}>
+<path d="M 10 90 Q 50 5 90 90 Z" fill="#14532D" opacity="0.4"/>
+<path d="M 50 88 L 75 65 L 50 42 L 25 65 Z" fill="#92400E" opacity="0.3"/>
+<line x1="50" y1="88" x2="10" y2="20" stroke="#475569" strokeWidth="0.5"/>
+<line x1="50" y1="88" x2="90" y2="20" stroke="#475569" strokeWidth="0.5"/>
+{FIELD_POS.map(pos=><text key={pos.id} x={pos.x} y={pos.y} fill="#475569" fontSize="4.5" textAnchor="middle" fontWeight="600">{pos.id}</text>)}
+{plays.map((p,i)=>p.fieldLocation&&(
+<g key={i}>
+<line x1="50" y1="88" x2={p.fieldLocation.x} y2={p.fieldLocation.y} stroke={pc(p.pitchType)} strokeWidth="2" opacity="0.75"/>
+{IS_OUT(p.result, p.abOutcome) ? (
+<g>
+<circle cx={p.fieldLocation.x} cy={p.fieldLocation.y} r="5" fill="none" stroke={pc(p.pitchType)} strokeWidth="1.8" opacity="0.95"/>
+<line x1={p.fieldLocation.x-3} y1={p.fieldLocation.y-3} x2={p.fieldLocation.x+3} y2={p.fieldLocation.y+3} stroke={pc(p.pitchType)} strokeWidth="1.8"/>
+<line x1={p.fieldLocation.x+3} y1={p.fieldLocation.y-3} x2={p.fieldLocation.x-3} y2={p.fieldLocation.y+3} stroke={pc(p.pitchType)} strokeWidth="1.8"/>
+</g>
+) : (
+<circle cx={p.fieldLocation.x} cy={p.fieldLocation.y} r="4.5" fill={pc(p.pitchType)} opacity="0.95"/>
+)}
+</g>
+))}
+{interactive&&pending&&<text x="50" y="50" fill="#F59E0B" fontSize="6" textAnchor="middle" opacity="0.6" fontWeight="bold">TAP FIELD</text>}
+</svg>
+</div>
+);
+}
+
+// ── Pitch Entry ───────────────────────────────────────────────────────────────
+// Pitchers: type → location → result (3 taps done)
+// Hitters:  type → location → result → [contact+spray if in play] → [outcome]
+function PitchEntry({ onSave, onCancel, pitchNum, forPitcher }) {
+const [step,    setStep]    = useState(“type”);
+const [type,    setType]    = useState(null);
+const [loc,     setLoc]     = useState(null);
+const [result,  setResult]  = useState(null);
+const [contact, setContact] = useState(null);
+const [fieldLoc,setFieldLoc]= useState(null);
+
+const sel = PITCH_TYPES.find(p=>p.id===type);
+
+const handleType = id => { setType(id); setStep(“location”); };
+const handleLoc  = l  => { setLoc(l);  setStep(“result”); };
+
+const handleResult = r => {
+setResult(r);
+if (forPitcher) { onSave({pitchType:type,location:loc,result:r}); return; }
+if (IN_PLAY(r)) { setStep(“contact”); return; }
+onSave({pitchType:type,location:loc,result:r});
+};
+
+const handleContact = c => { setContact(c); setStep(“spray”); };
+
+const handleSpray = fl => { setFieldLoc(fl); setStep(“outcome”); };
+
+const handleOutcome = o => onSave({pitchType:type,location:loc,result,contact,fieldLocation:fieldLoc,abOutcome:o});
+
+return (
+<div style={{background:”#1E293B”,borderRadius:12,padding:14,border:“1px solid #334155”}}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”,marginBottom:12}}>
+<div style={{display:“flex”,gap:8,alignItems:“center”}}>
+<span style={{background:”#0F172A”,color:”#94A3B8”,borderRadius:6,padding:“3px 9px”,fontSize:12,fontWeight:700}}>#{pitchNum}</span>
+{type&&<span style={{background:sel?.color+“33”,color:sel?.color,borderRadius:6,padding:“3px 9px”,fontSize:12,fontWeight:700}}>{sel?.label}</span>}
+{step!==“type”&&<span style={{color:”#475569”,fontSize:11}}>
+{step===“location”?“→ tap zone”:step===“result”?“→ result”:step===“contact”?“→ contact”:step===“spray”?“→ tap field”:“→ outcome”}
+</span>}
+</div>
+<button onClick={onCancel} style={{background:“none”,border:“none”,color:”#64748B”,fontSize:22,cursor:“pointer”}}>✕</button>
+</div>
+
+```
+  {/* STEP 1: pitch type — includes fast K button for hitters */}
+  {step==="type"&&(
+    <div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:forPitcher?0:10}}>
+        {PITCH_TYPES.map(pt=>(
+          <button key={pt.id} onClick={()=>handleType(pt.id)}
+            style={{background:pt.color+"22",border:`2.5px solid ${pt.color}`,color:pt.color,borderRadius:10,padding:"16px 4px",fontSize:13,fontWeight:800,cursor:"pointer"}}>
+            {pt.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )}
+
+  {/* STEP 2: location */}
+  {step==="location"&&(
+    <>
+      <div style={{color:sel?.color,fontWeight:700,marginBottom:8,fontSize:13}}>● {sel?.label} — tap where it was thrown</div>
+      <StrikeZone pitches={[]} onTap={handleLoc} pending interactive/>
+      {/* K shortcut buttons — hitters only, appears after picking pitch type */}
+      {!forPitcher&&(
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:10}}>
+          <button onClick={()=>{
+              // K — we still need a location so keep normal flow but pre-set result
+              // Actually just save immediately with center-ish location for K
+              onSave({pitchType:type,location:loc||{x:50,y:60},result:"Strike (Swinging)",abOutcome:null,isK:true});
+            }}
+            style={{background:"#7F1D1D33",border:"2px solid #EF4444",color:"#EF4444",borderRadius:8,padding:"12px 4px",fontSize:15,fontWeight:800,cursor:"pointer"}}>
+            ⚡ K (Swinging)
+          </button>
+          <button onClick={()=>{
+              onSave({pitchType:type,location:loc||{x:50,y:60},result:"Strike (Looking)",abOutcome:null,isK:true});
+            }}
+            style={{background:"#7F1D1D33",border:"2px solid #F59E0B",color:"#F59E0B",borderRadius:8,padding:"12px 4px",fontSize:15,fontWeight:800,cursor:"pointer"}}>
+            👁 Kl (Looking)
+          </button>
+        </div>
+      )}
+    </>
+  )}
+
+  {/* STEP 3: result */}
+  {step==="result"&&(
+    <>
+      <div style={{color:"#CBD5E1",fontWeight:600,marginBottom:10,fontSize:13}}>What was the result?</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+        {PITCH_RESULTS.map(r=>{
+          const isBall=r==="Ball",isStrike=r.startsWith("Strike"),isHit=r==="In Play - Hit",isOut=r==="In Play - Out";
+          return(
+            <button key={r} onClick={()=>handleResult(r)}
+              style={{background:isBall?"#14532D22":isStrike?"#7F1D1D22":isHit?"#065F4622":isOut?"#92400E22":"#0F172A",
+                border:`1.5px solid ${isBall?"#22C55E":isStrike?"#EF4444":isHit?"#10B981":isOut?"#F59E0B":"#334155"}`,
+                color:"#E2E8F0",borderRadius:8,padding:"13px 6px",fontSize:13,cursor:"pointer",fontWeight:600}}>
+              {r}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  )}
+
+  {/* STEP 4: contact quality */}
+  {step==="contact"&&(
+    <>
+      <div style={{color:"#CBD5E1",fontWeight:600,marginBottom:10,fontSize:13}}>Contact quality?</div>
+      <div style={{display:"flex",gap:10}}>
+        {CONTACT_TYPES.map(c=>(
+          <button key={c} onClick={()=>handleContact(c)}
+            style={{flex:1,background:c==="Hard"?"#7F1D1D22":c==="Medium"?"#78350F22":"#14532D22",
+              border:`2px solid ${c==="Hard"?"#EF4444":c==="Medium"?"#F59E0B":"#22C55E"}`,
+              color:c==="Hard"?"#EF4444":c==="Medium"?"#F59E0B":"#22C55E",
+              borderRadius:10,padding:"18px 4px",fontSize:14,fontWeight:800,cursor:"pointer"}}>
+            {c}
+          </button>
+        ))}
+      </div>
+    </>
+  )}
+
+  {/* STEP 5: spray */}
+  {step==="spray"&&(
+    <>
+      <div style={{color:"#CBD5E1",fontWeight:600,marginBottom:8,fontSize:13}}>Tap where it was hit</div>
+      <SprayChart plays={[]} onTap={handleSpray} pending interactive/>
+    </>
+  )}
+
+  {/* STEP 6: outcome */}
+  {step==="outcome"&&(
+    <>
+      <div style={{color:"#CBD5E1",fontWeight:600,marginBottom:10,fontSize:13}}>What was the result?</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,maxHeight:280,overflowY:"auto"}}>
+        {AB_OUTCOMES.map(o=>(
+          <button key={o} onClick={()=>handleOutcome(o)}
+            style={{background:["Single","Double","Triple","Home Run"].includes(o)?"#065F4622":"#7F1D1D22",
+              border:`1.5px solid ${["Single","Double","Triple","Home Run"].includes(o)?"#10B981":"#EF4444"}`,
+              color:"#E2E8F0",borderRadius:8,padding:"12px 6px",fontSize:12,cursor:"pointer",fontWeight:600}}>
+            {o}
+          </button>
+        ))}
+      </div>
+    </>
+  )}
+</div>
+```
+
+);
+}
+
+// ── Stats Panel ───────────────────────────────────────────────────────────────
+function StatsPanel({ pitches, accent }) {
+const total = pitches.length;
+const mix = PITCH_TYPES.map(pt=>({…pt,n:pitches.filter(p=>p.pitchType===pt.id).length})).filter(x=>x.n>0);
+if (total===0) return <div style={{color:”#475569”,textAlign:“center”,padding:20,fontSize:13}}>No pitches logged yet</div>;
+return (
+<div style={{display:“flex”,flexDirection:“column”,gap:10}}>
+<div style={{color:”#64748B”,fontSize:10}}>PITCH MIX — {total} pitches</div>
+{mix.map(pt=>(
+<div key={pt.id}>
+<div style={{display:“flex”,justifyContent:“space-between”,marginBottom:3}}>
+<span style={{color:pt.color,fontSize:12,fontWeight:700}}>
+<span style={{display:“inline-block”,width:10,height:10,borderRadius:“50%”,background:pt.color,marginRight:6,verticalAlign:“middle”}}/>
+{pt.label}
+</span>
+<span style={{color:”#94A3B8”,fontSize:12}}>{pt.n} ({Math.round(pt.n/total*100)}%)</span>
+</div>
+<div style={{background:”#1E293B”,borderRadius:4,height:7}}>
+<div style={{background:pt.color,borderRadius:4,height:7,width:`${pt.n/total*100}%`}}/>
+</div>
+</div>
+))}
+</div>
+);
+}
+
+// ── Pitcher View ──────────────────────────────────────────────────────────────
+function PitcherView({ pitcher, onPitch, onNote, onUndo, accent }) {
+const [adding, setAdding] = useState(false);
+const [inning, setInning] = useState(1);
+const [tab,    setTab]    = useState(“chart”);
+
+const innings  = pitcher.innings||{};
+const innP     = innings[inning]||[];
+const allP     = Object.values(innings).flat();
+const used     = Object.keys(innings).map(Number).filter(n=>innings[n]?.length>0).sort((a,b)=>a-b);
+const displayP = pitcher.bullpen ? allP : innP;
+const canUndo  = innP.length > 0;
+
+return (
+<div style={{display:“flex”,flexDirection:“column”,gap:10}}>
+<div style={{display:“flex”,alignItems:“center”,gap:8,flexWrap:“wrap”}}>
+<div style={{fontSize:18,fontWeight:800}}>{pitcher.name}</div>
+{pitcher.bullpen&&<span style={{background:”#78350F”,color:”#FDE68A”,borderRadius:6,padding:“2px 8px”,fontSize:11}}>BULLPEN</span>}
+<div style={{color:”#64748B”,fontSize:12}}>{allP.length} pitches</div>
+{canUndo&&(
+<button onClick={()=>onUndo(pitcher.bullpen?“BP”:inning)}
+style={{background:”#334155”,border:“none”,color:”#F59E0B”,borderRadius:8,padding:“5px 12px”,fontSize:12,fontWeight:700,cursor:“pointer”,marginLeft:“auto”}}>
+↩ Undo Last
+</button>
+)}
+</div>
+
+```
+  {!pitcher.bullpen&&(
+    <div>
+      <div style={{color:"#64748B",fontSize:10,marginBottom:4}}>INNING</div>
+      <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+        {INNINGS.map(inn=>(
+          <button key={inn} onClick={()=>setInning(inn)}
+            style={{padding:"5px 11px",borderRadius:14,border:"none",fontSize:11,fontWeight:700,cursor:"pointer",
+              background:inning===inn?accent:used.includes(inn)?"#1E293B":"#0F172A",
+              color:inning===inn?"white":used.includes(inn)?"#94A3B8":"#334155"}}>
+            {inn}{used.includes(inn)?` (${innings[inn]?.length})`:""}
+          </button>
+        ))}
+      </div>
+    </div>
+  )}
+
+  <div style={{display:"flex",background:"#0F172A",borderRadius:8,padding:3,gap:2}}>
+    {[["chart","📍 Chart"],["stats","📊 Stats"],["log","📋 Log"],["notes","📝 Notes"]].map(([t,lbl])=>(
+      <button key={t} onClick={()=>setTab(t)}
+        style={{flex:1,padding:"7px 4px",borderRadius:6,border:"none",fontSize:11,fontWeight:600,cursor:"pointer",
+          background:tab===t?"#1E293B":"transparent",color:tab===t?"#F1F5F9":"#64748B"}}>
+        {lbl}
+      </button>
+    ))}
+  </div>
+
+  {tab==="chart"&&(
+    <div>
+      <div style={{color:"#64748B",fontSize:10,marginBottom:3}}>{pitcher.bullpen?"ALL PITCHES":`INNING ${inning}`} — numbered per inning</div>
+      <StrikeZone pitches={displayP}/>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:8}}>
+        {PITCH_TYPES.filter(pt=>displayP.some(p=>p.pitchType===pt.id)).map(pt=>(
+          <div key={pt.id} style={{display:"flex",alignItems:"center",gap:4}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:pt.color}}/>
+            <span style={{color:"#94A3B8",fontSize:11}}>{pt.label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )}
+
+  {tab==="stats"&&<StatsPanel pitches={allP} accent={accent}/>}
+
+  {tab==="log"&&(
+    <div style={{background:"#0F172A",borderRadius:8,padding:10,maxHeight:280,overflowY:"auto"}}>
+      {innP.length===0
+        ?<div style={{color:"#475569",fontSize:12,textAlign:"center",padding:16}}>No pitches this inning</div>
+        :innP.map((p,i)=>{
+          const pt=PITCH_TYPES.find(x=>x.id===p.pitchType);
+          const rc=p.result==="Ball"?"#22C55E":p.result?.includes("Hit")?"#10B981":"#EF4444";
+          return(
+            <div key={i} style={{display:"flex",gap:7,alignItems:"center",padding:"5px 0",borderBottom:"1px solid #1E293B",fontSize:12}}>
+              <span style={{background:pt?.color+"33",color:pt?.color,borderRadius:"50%",width:22,height:22,
+                display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:11,flexShrink:0}}>{i+1}</span>
+              <span style={{color:pt?.color,fontWeight:600,minWidth:60}}>{pt?.label}</span>
+              <span style={{color:rc,flex:1}}>{p.result}</span>
+            </div>
+          );
+        })}
+    </div>
+  )}
+
+  {tab==="notes"&&<NotesPanel notes={pitcher.notes||[]} onAdd={onNote}/>}
+
+  {!adding?(
+    <button onClick={()=>setAdding(true)}
+      style={{background:accent,border:"none",color:"white",borderRadius:10,padding:15,fontSize:16,fontWeight:800,cursor:"pointer"}}>
+      + Log Pitch{!pitcher.bullpen?` — Inning ${inning}`:""}
+    </button>
+  ):(
+    <PitchEntry pitchNum={innP.length+1} forPitcher
+      onSave={p=>{onPitch({...p,inning:pitcher.bullpen?"BP":inning});setAdding(false);}}
+      onCancel={()=>setAdding(false)}/>
+  )}
+</div>
+```
+
+);
+}
+
+// ── Hitter View ───────────────────────────────────────────────────────────────
+function HitterView({ batter, onPitch, onNote, onNewAB, onUndo, accent }) {
+const [adding, setAdding] = useState(false);
+const [abIdx,  setAbIdx]  = useState(batter.atBats.length-1);
+
+const safeIdx = Math.min(abIdx, batter.atBats.length-1);
+const ab = batter.atBats[safeIdx]||{pitches:[],notes:[],inning:1};
+const allNotes = batter.atBats.flatMap((a,i)=>a.notes.map(n=>({text:n,ab:i+1,inn:a.inning})));
+const canUndo  = ab.pitches.length > 0;
+
+// Last pitch result for the AB tab badge
+const abBadge = ab => {
+const last = ab.pitches[ab.pitches.length-1];
+if (!last) return null;
+const outcome = last.abOutcome || (IS_K(last.result)?(last.result===“Strike (Looking)”?“Kl”:“K”):null);
+return { text: outcome||last.result, isHit: IS_HIT(last.result, last.abOutcome) };
+};
+
+return (
+<div style={{display:“flex”,flexDirection:“column”,gap:10}}>
+{/* AB tabs */}
+<div style={{display:“flex”,gap:5,flexWrap:“wrap”,alignItems:“center”}}>
+{batter.atBats.map((a,i)=>{
+const badge = abBadge(a);
+const isHit = badge?.isHit;
+const isK   = badge?.text===“K”||badge?.text===“Kl”;
+return(
+<button key={i} onClick={()=>setAbIdx(i)}
+style={{padding:“5px 11px”,borderRadius:16,border:`2px solid ${safeIdx===i?accent:"transparent"}`,
+fontSize:11,fontWeight:700,cursor:“pointer”,background:safeIdx===i?”#1E293B”:”#0F172A”,color:safeIdx===i?“white”:”#64748B”}}>
+AB{i+1}·Inn{a.inning}
+{badge&&<span style={{marginLeft:4,color:isHit?”#22C55E”:isK?”#F59E0B”:”#EF4444”,fontWeight:800}}>
+{isK?“⚡”+badge.text:isHit?“✓”:badge.text.length>6?badge.text.slice(0,4)+”..”:badge.text}
+</span>}
+</button>
+);
+})}
+<NewABBtn onNew={inn=>{onNewAB(inn);setAbIdx(batter.atBats.length);}} accent={accent}/>
+</div>
+
+```
+  {/* Undo button */}
+  {canUndo&&(
+    <div style={{display:"flex",justifyContent:"flex-end"}}>
+      <button onClick={()=>onUndo(safeIdx)}
+        style={{background:"#334155",border:"none",color:"#F59E0B",borderRadius:8,padding:"5px 12px",fontSize:12,fontWeight:700,cursor:"pointer"}}>
+        ↩ Undo Last Pitch
+      </button>
+    </div>
+  )}
+
+  {/* Charts */}
+  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+    <div>
+      <div style={{color:"#64748B",fontSize:10,marginBottom:3}}>PITCH LOCATIONS</div>
+      <StrikeZone pitches={ab.pitches}/>
+    </div>
+    <div>
+      <div style={{color:"#64748B",fontSize:10,marginBottom:3}}>SPRAY CHART <span style={{color:"#334155"}}>● hit  ✕ out</span></div>
+      <SprayChart plays={ab.pitches.filter(p=>p.fieldLocation)}/>
+    </div>
+  </div>
+
+  {/* Pitch log */}
+  <div style={{background:"#0F172A",borderRadius:8,padding:10,maxHeight:130,overflowY:"auto"}}>
+    {ab.pitches.length===0
+      ?<div style={{color:"#475569",fontSize:12,textAlign:"center",padding:8}}>No pitches logged</div>
+      :ab.pitches.map((p,i)=>{
+        const pt=PITCH_TYPES.find(x=>x.id===p.pitchType);
+        const isHit=IS_HIT(p.result,p.abOutcome);
+        const isK2=IS_K(p.result);
+        const rc=p.result==="Ball"?"#64748B":isHit?"#22C55E":isK2?"#F59E0B":"#EF4444";
+        return(
+          <div key={i} style={{display:"flex",gap:7,alignItems:"center",padding:"4px 0",borderBottom:"1px solid #1E293B",fontSize:12}}>
+            <span style={{background:pt?.color+"33",color:pt?.color,borderRadius:"50%",width:20,height:20,
+              display:"flex",alignItems:"center",justifyContent:"center",fontWeight:800,fontSize:10,flexShrink:0}}>{i+1}</span>
+            <span style={{color:pt?.color,fontWeight:600,minWidth:60}}>{pt?.label}</span>
+            <span style={{color:rc,flex:1}}>{p.abOutcome||p.result}</span>
+            {p.contact&&<span style={{color:"#475569",fontSize:10}}>{p.contact}</span>}
+          </div>
+        );
+      })}
+  </div>
+
+  {/* Legend */}
+  <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+    {PITCH_TYPES.filter(pt=>ab.pitches.some(p=>p.pitchType===pt.id)).map(pt=>(
+      <div key={pt.id} style={{display:"flex",alignItems:"center",gap:4}}>
+        <div style={{width:10,height:10,borderRadius:"50%",background:pt.color}}/>
+        <span style={{color:"#94A3B8",fontSize:11}}>{pt.label}</span>
+      </div>
+    ))}
+  </div>
+
+  {!adding?(
+    <button onClick={()=>setAdding(true)}
+      style={{background:accent,border:"none",color:"white",borderRadius:10,padding:15,fontSize:16,fontWeight:800,cursor:"pointer"}}>
+      + Log Pitch
+    </button>
+  ):(
+    <PitchEntry pitchNum={ab.pitches.length+1} forPitcher={false}
+      onSave={p=>{onPitch(safeIdx,p);setAdding(false);}}
+      onCancel={()=>setAdding(false)}/>
+  )}
+
+  {/* Notes */}
+  <div style={{background:"#0F172A",borderRadius:8,padding:10}}>
+    <div style={{color:"#64748B",fontSize:10,marginBottom:5}}>NOTES — carry across all ABs</div>
+    {allNotes.map((n,i)=>(
+      <div key={i} style={{color:"#CBD5E1",fontSize:12,marginBottom:3}}>
+        <span style={{color:"#475569",fontSize:10}}>AB{n.ab} Inn{n.inn}: </span>{n.text}
+      </div>
+    ))}
+    <NoteInput onAdd={n=>onNote(safeIdx,n)}/>
+  </div>
+</div>
+```
+
+);
+}
+
+// ── Shared components ─────────────────────────────────────────────────────────
+function NotesPanel({ notes, onAdd }) {
+return(
+<div style={{background:”#0F172A”,borderRadius:8,padding:10}}>
+{notes.length===0&&<div style={{color:”#475569”,fontSize:12,marginBottom:8}}>No notes yet</div>}
+{notes.map((n,i)=><div key={i} style={{color:”#CBD5E1”,fontSize:13,marginBottom:4}}>• {n}</div>)}
+<NoteInput onAdd={onAdd}/>
+</div>
+);
+}
+function NoteInput({ onAdd }) {
+const [v,setV]=useState(””);
+return(
+<div style={{display:“flex”,gap:8,marginTop:8}}>
+<input value={v} onChange={e=>setV(e.target.value)} placeholder=“Add note…”
+style={{flex:1,background:”#1E293B”,border:“1px solid #334155”,color:”#E2E8F0”,borderRadius:6,padding:“8px 10px”,fontSize:13}}
+onKeyDown={e=>{if(e.key===“Enter”&&v.trim()){onAdd(v.trim());setV(””);}}}/>
+<button onClick={()=>{if(v.trim()){onAdd(v.trim());setV(””);}}}
+style={{background:”#334155”,border:“none”,color:”#E2E8F0”,borderRadius:6,padding:“8px 13px”,cursor:“pointer”,fontWeight:700}}>Add</button>
+</div>
+);
+}
+function NewABBtn({ onNew, accent }) {
+const [open,setOpen]=useState(false);
+const [inn,setInn]=useState(1);
+if (!open) return(
+<button onClick={()=>setOpen(true)}
+style={{padding:“5px 11px”,borderRadius:16,border:“2px dashed #334155”,background:“none”,color:”#64748B”,fontSize:11,cursor:“pointer”}}>
++ New AB
+</button>
+);
+return(
+<div style={{display:“flex”,gap:5,alignItems:“center”}}>
+<select value={inn} onChange={e=>setInn(Number(e.target.value))}
+style={{background:”#1E293B”,border:“1px solid #334155”,color:”#E2E8F0”,borderRadius:6,padding:“4px 6px”,fontSize:11}}>
+{INNINGS.map(i=><option key={i} value={i}>{i===“EXT”?“Extra”:`Inning ${i}`}</option>)}
+</select>
+<button onClick={()=>{onNew(inn);setOpen(false);}}
+style={{background:accent,border:“none”,color:“white”,borderRadius:6,padding:“5px 11px”,fontSize:11,fontWeight:700,cursor:“pointer”}}>Start</button>
+<button onClick={()=>setOpen(false)} style={{background:“none”,border:“none”,color:”#64748B”,cursor:“pointer”,fontSize:16}}>✕</button>
+</div>
+);
+}
+function AddPersonInput({ label, onAdd, accent }) {
+const [v,setV]=useState(””);
+return(
+<div style={{display:“flex”,gap:6,marginTop:8}}>
+<input value={v} onChange={e=>setV(e.target.value)} placeholder={`${label} name...`}
+style={{flex:1,background:”#0F172A”,border:“1px solid #334155”,color:”#E2E8F0”,borderRadius:6,padding:“8px 10px”,fontSize:13}}
+onKeyDown={e=>{if(e.key===“Enter”&&v.trim()){onAdd(v.trim());setV(””);}}}/>
+<button onClick={()=>{if(v.trim()){onAdd(v.trim());setV(””);}}}
+style={{background:accent,border:“none”,color:“white”,borderRadius:6,padding:“8px 13px”,cursor:“pointer”,fontWeight:800,fontSize:16}}>+</button>
+</div>
+);
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────────
+function Sidebar({ game, side, subTab, selectedId, onSelect, onAdd, onClose, isBullpen, setIsBullpen }) {
+const isOur=side===“our”, isPitch=subTab===“pitchers”;
+const key=`${isOur?"our":"their"}${isPitch?"Pitchers":"Hitters"}`;
+const list=game?.[key]||[];
+const accent=isOur?”#1D4ED8”:”#7C3AED”;
+return(
+<div style={{position:“fixed”,inset:0,zIndex:50}}>
+<div onClick={onClose} style={{position:“absolute”,inset:0,background:”#000000AA”}}/>
+<div style={{position:“absolute”,left:0,top:0,bottom:0,width:280,background:”#1E293B”,padding:16,overflowY:“auto”}}>
+<div style={{display:“flex”,justifyContent:“space-between”,marginBottom:14}}>
+<div style={{fontWeight:700,fontSize:15}}>{isOur?“Our”:“Their”} {isPitch?“Pitchers”:“Hitters”}</div>
+<button onClick={onClose} style={{background:“none”,border:“none”,color:”#64748B”,fontSize:20,cursor:“pointer”}}>✕</button>
+</div>
+{list.map(p=>(
+<button key={p.id} onClick={()=>{onSelect(p.id);onClose();}}
+style={{width:“100%”,background:selectedId===p.id?accent:”#0F172A”,border:“none”,color:“white”,
+borderRadius:8,padding:“11px 12px”,marginBottom:5,textAlign:“left”,cursor:“pointer”,fontSize:13}}>
+{p.name}
+{p.bullpen&&<span style={{color:”#F59E0B”,fontSize:10,marginLeft:6}}>[BP]</span>}
+<span style={{color:”#64748B”,fontSize:10,marginLeft:6}}>
+{isPitch?`${Object.values(p.innings||{}).flat().length}p`:`${p.atBats?.reduce((a,b)=>a+b.pitches.length,0)||0}p`}
+</span>
+</button>
+))}
+{isPitch&&(
+<div style={{display:“flex”,alignItems:“center”,gap:8,margin:“10px 0 6px”}}>
+<input type=“checkbox” id=“bp” checked={isBullpen} onChange={e=>setIsBullpen(e.target.checked)}/>
+<label htmlFor=“bp” style={{color:”#94A3B8”,fontSize:12}}>Bullpen session</label>
+</div>
+)}
+<AddPersonInput label={`Add ${isPitch?"Pitcher":"Batter"}`} onAdd={onAdd} accent={accent}/>
+</div>
+</div>
+);
+}
+
+// ── Scouting Report ───────────────────────────────────────────────────────────
+function ReportModal({ game, onClose }) {
+const [report,  setReport]  = useState(””);
+const [loading, setLoading] = useState(false);
+const [done,    setDone]    = useState(false);
+const [view,    setView]    = useState(“visual”); // “visual” | “ai”
+
+// Build a visual summary card per batter
+const BatterCard = ({ batter, color }) => {
+// Combined spray chart: all pitches across all ABs that were hit in play
+const allInPlayPitches = batter.atBats.flatMap(ab=>ab.pitches.filter(p=>p.fieldLocation));
+const allPitches = batter.atBats.flatMap(ab=>ab.pitches);
+const allNotes = batter.atBats.flatMap((ab,i)=>ab.notes.map(n=>`AB${i+1} Inn${ab.inning}: ${n}`));
+
+```
+return(
+  <div className="print-section" style={{background:"#1E293B",borderRadius:12,padding:14,marginBottom:12,border:`1px solid ${color}44`}}>
+    {/* Batter name + AB summary row */}
+    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,flexWrap:"wrap"}}>
+      <div style={{color:"white",fontWeight:800,fontSize:15}}>{batter.name}</div>
+      {batter.atBats.map((ab,i)=>{
+        const last=ab.pitches[ab.pitches.length-1];
+        const outcome=last?.abOutcome||(IS_K(last?.result)?(last?.result==="Strike (Looking)"?"Kl":"K"):last?.result)||"—";
+        const isHit=IS_HIT(last?.result,last?.abOutcome);
+        const isK2=outcome==="K"||outcome==="Kl";
+        const pitchLabel=last?label(last.pitchType):"";
+        return(
+          <div key={i} style={{background:"#0F172A",borderRadius:8,padding:"4px 10px",fontSize:11,border:`1px solid ${isHit?"#22C55E":isK2?"#F59E0B":"#EF4444"}44`}}>
+            <span style={{color:"#64748B"}}>AB{i+1} Inn{ab.inning} </span>
+            <span style={{color:isHit?"#22C55E":isK2?"#F59E0B":"#EF4444",fontWeight:700}}>{outcome}</span>
+            {pitchLabel&&<span style={{color:"#475569",fontSize:10}}> on {pitchLabel}</span>}
+          </div>
+        );
+      })}
+    </div>
+
+    {/* Charts: pitch zone + combined spray */}
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+      <div>
+        <div style={{color:"#64748B",fontSize:10,marginBottom:3}}>PITCHES SEEN (all ABs)</div>
+        <StrikeZone pitches={allPitches}/>
+      </div>
+      <div>
+        <div style={{color:"#64748B",fontSize:10,marginBottom:3}}>SPRAY CHART — ● hit  ✕ out</div>
+        <SprayChart plays={allInPlayPitches}/>
+      </div>
+    </div>
+
+    {/* Pitch legend */}
+    <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:8}}>
+      {PITCH_TYPES.filter(pt=>allPitches.some(p=>p.pitchType===pt.id)).map(pt=>(
+        <div key={pt.id} style={{display:"flex",alignItems:"center",gap:4}}>
+          <div style={{width:9,height:9,borderRadius:"50%",background:pt.color}}/>
+          <span style={{color:"#94A3B8",fontSize:10}}>{pt.label}</span>
+        </div>
+      ))}
+    </div>
+
+    {/* AB-by-AB pitch breakdown */}
+    {batter.atBats.map((ab,i)=>{
+      if (ab.pitches.length===0) return null;
+      const last=ab.pitches[ab.pitches.length-1];
+      const outcome=last?.abOutcome||(IS_K(last?.result)?(last?.result==="Strike (Looking)"?"Kl":"K"):last?.result)||"—";
+      const isHit=IS_HIT(last?.result,last?.abOutcome);
+      return(
+        <div key={i} style={{background:"#0F172A",borderRadius:6,padding:"6px 10px",marginBottom:5,fontSize:11}}>
+          <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:3}}>
+            <span style={{color:"#64748B"}}>AB{i+1} · Inn{ab.inning}</span>
+            <span style={{color:isHit?"#22C55E":"#EF4444",fontWeight:700}}>{outcome}</span>
+            {last?.contact&&<span style={{color:"#475569"}}>· {last.contact} contact</span>}
+          </div>
+          <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+            {ab.pitches.map((p,j)=>{
+              const pt=PITCH_TYPES.find(x=>x.id===p.pitchType);
+              const isLast=j===ab.pitches.length-1;
+              const rc=p.result==="Ball"?"#64748B":IS_HIT(p.result,p.abOutcome)?"#22C55E":IS_K(p.result)?"#F59E0B":"#EF4444";
+              return(
+                <span key={j} style={{background:pt?.color+"22",border:`1px solid ${isLast?rc:pt?.color+"44"}`,
+                  color:pt?.color,borderRadius:4,padding:"2px 6px",fontSize:10,fontWeight:isLast?800:400}}>
+                  {j+1}.{pt?.id}{isLast?` → ${p.abOutcome||p.result}`:""}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      );
+    })}
+
+    {allNotes.length>0&&(
+      <div style={{marginTop:6,color:"#64748B",fontSize:10}}>
+        {allNotes.map((n,i)=><div key={i} style={{color:"#94A3B8",fontSize:11}}>📝 {n}</div>)}
+      </div>
+    )}
+  </div>
+);
+```
+
+};
+
+const generate = async () => {
+setLoading(true);
+const summary = {
+opponent:game.opponent, date:game.date,
+ourHitters:game.ourHitters.map(b=>({name:b.name,atBats:b.atBats.map((ab,i)=>({ab:i+1,inning:ab.inning,pitches:ab.pitches.map(p=>`${p.pitchType}→${p.result}${p.abOutcome?` (${p.abOutcome})${p.contact?` ${p.contact} contact`:””}`:""}`),notes:ab.notes}))})),
+theirHitters:game.theirHitters.map(b=>({name:b.name,atBats:b.atBats.map((ab,i=>({ab:i+1,inning:ab.inning,pitches:ab.pitches.map(p=>`${p.pitchType}→${p.result}${p.abOutcome?` (${p.abOutcome})${p.contact?` ${p.contact} contact`:””}`:""}`) ,notes:ab.notes})))})),
+ourPitchers:game.ourPitchers.map(p=>{const all=Object.values(p.innings||{}).flat();return{name:p.name,totalPitches:all.length,pitchMix:PITCH_TYPES.map(pt=>({type:pt.id,n:all.filter(x=>x.pitchType===pt.id).length})).filter(x=>x.n>0),inningBreakdown:Object.entries(p.innings||{}).sort((a,b)=>Number(a[0])-Number(b[0])).map(([inn,ps])=>({inning:inn,count:ps.length,pitches:ps.map(x=>`${x.pitchType}→${x.result}`).join(”, “)})),notes:p.notes};}),
+theirPitchers:game.theirPitchers.map(p=>{const all=Object.values(p.innings||{}).flat();return{name:p.name,totalPitches:all.length,pitchMix:PITCH_TYPES.map(pt=>({type:pt.id,n:all.filter(x=>x.pitchType===pt.id).length})).filter(x=>x.n>0),inningBreakdown:Object.entries(p.innings||{}).sort((a,b)=>Number(a[0])-Number(b[0])).map(([inn,ps])=>({inning:inn,count:ps.length,pitches:ps.map(x=>`${x.pitchType}→${x.result}`).join(”, “)})),notes:p.notes};}),
+};
+try {
+const res=await fetch(“https://api.anthropic.com/v1/messages”,{method:“POST”,headers:{“Content-Type”:“application/json”},
+body:JSON.stringify({model:“claude-sonnet-4-20250514”,max_tokens:1000,
+messages:[{role:“user”,content:`You are an experienced high school baseball coach and scout. Write a practical scouting report.\n\nSections:\n1. GAME OVERVIEW\n2. OUR HITTERS — each batter by inning, pitches seen, performance, coaching notes\n3. THEIR HITTERS — same plus recommended attack plan\n4. OUR PITCHERS — pitch mix, inning efficiency, areas to improve\n5. THEIR PITCHERS — tendencies, how our hitters should approach them\n6. KEY TAKEAWAYS\n\nUse FB/CB/SL/CH/CT/SI. Be specific and actionable.\n\nData:\n${JSON.stringify(summary,null,2)}`}]})});
+const data=await res.json();
+setReport(data.content?.[0]?.text||“Could not generate.”);
+setDone(true); setView(“ai”);
+} catch { setReport(“Error generating.”); setDone(true); setView(“ai”); }
+setLoading(false);
+};
+
+return(
+<div style={{position:“fixed”,inset:0,background:”#000000CC”,zIndex:100,display:“flex”,alignItems:“center”,justifyContent:“center”,padding:16}}>
+<div style={{background:”#1E293B”,borderRadius:16,padding:18,width:“100%”,maxWidth:780,maxHeight:“93vh”,display:“flex”,flexDirection:“column”,gap:10}}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“center”}}>
+<div style={{color:“white”,fontSize:16,fontWeight:700}}>📄 vs {game.opponent} · {game.date}</div>
+<button onClick={onClose} style={{background:“none”,border:“none”,color:”#64748B”,fontSize:22,cursor:“pointer”}}>✕</button>
+</div>
+
+```
+    {/* View toggle */}
+    <div style={{display:"flex",background:"#0F172A",borderRadius:8,padding:3,gap:2}}>
+      {[["visual","📊 Visual Report"],["ai","✦ AI Report"]].map(([v,lbl])=>(
+        <button key={v} onClick={()=>setView(v)}
+          style={{flex:1,padding:"8px 4px",borderRadius:6,border:"none",fontSize:12,fontWeight:700,cursor:"pointer",
+            background:view===v?"#1E293B":"transparent",color:view===v?"#F1F5F9":"#64748B"}}>
+          {lbl}
+        </button>
+      ))}
+    </div>
+
+    <div style={{flex:1,overflowY:"auto"}}>
+      {view==="visual"&&(
+        <div>
+          {[{label:"🏠 OUR HITTERS",list:game.ourHitters,color:"#1D4ED8"},{label:"👁 THEIR HITTERS",list:game.theirHitters,color:"#7C3AED"}].map(side=>(
+            <div key={side.label}>
+              <div style={{color:side.color,fontWeight:700,fontSize:12,marginBottom:8,marginTop:4}}>{side.label}</div>
+              {side.list.length===0&&<div style={{color:"#334155",fontSize:12,marginBottom:10,marginLeft:8}}>None charted</div>}
+              {side.list.map(b=><BatterCard key={b.id} batter={b} color={side.color}/>)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {view==="ai"&&(
+        <div>
+          {!done?(
+            <button onClick={generate} disabled={loading}
+              style={{width:"100%",background:"#1D4ED8",border:"none",color:"white",borderRadius:10,padding:14,fontSize:15,fontWeight:700,cursor:loading?"default":"pointer",opacity:loading?0.6:1,marginBottom:10}}>
+              {loading?"✦ Generating...":"✦ Generate AI Scouting Report"}
+            </button>
+          ):(
+            <>
+              <div style={{display:"flex",gap:8,marginBottom:10}}>
+                <button onClick={generate} style={{background:"#334155",border:"none",color:"#94A3B8",borderRadius:8,padding:"8px 14px",fontSize:12,cursor:"pointer"}}>↻ Regenerate</button>
+                <button onClick={()=>window.print()} style={{flex:1,background:"#065F46",border:"none",color:"white",borderRadius:8,padding:"8px 14px",fontSize:13,fontWeight:700,cursor:"pointer"}}>🖨 Print / Save PDF</button>
+              </div>
+              <textarea value={report} onChange={e=>setReport(e.target.value)}
+                style={{width:"100%",minHeight:320,background:"#0F172A",border:"1px solid #334155",color:"#E2E8F0",borderRadius:8,padding:14,fontSize:13,lineHeight:1.8,resize:"vertical",fontFamily:"Georgia,serif"}}/>
+            </>
+          )}
+          {!done&&<button onClick={generate} disabled={loading} style={{display:"none"}}/>}
+        </div>
+      )}
+    </div>
+  </div>
+</div>
+```
+
+);
+}
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+function App() {
+const {games,save} = useStorage();
+const [screen,      setScreen]      = useState(“home”);
+const [game,        setGame]        = useState(null);
+const [side,        setSide]        = useState(“our”);
+const [subTab,      setSubTab]      = useState(“hitters”);
+const [selBatter,   setSelBatter]   = useState({our:null,their:null});
+const [selPitcher,  setSelPitcher]  = useState({our:null,their:null});
+const [sidebarOpen, setSidebarOpen] = useState(false);
+const [showReport,  setShowReport]  = useState(false);
+const [isBullpen,   setIsBullpen]   = useState(false);
+const [histGame,    setHistGame]    = useState(null);
+const [confirmDel,  setConfirmDel]  = useState(null);
+
+const upd      = g => setGame(g);
+const listKey  = (sd=side,st=subTab) => `${sd==="our"?"our":"their"}${st==="hitters"?"Hitters":"Pitchers"}`;
+const getList  = (g=game,sd=side,st=subTab) => g?.[listKey(sd,st)]||[];
+const selId    = subTab===“hitters”?selBatter[side]:selPitcher[side];
+const setSelId = id => subTab===“hitters”?setSelBatter(p=>({…p,[side]:id})):setSelPitcher(p=>({…p,[side]:id}));
+const current  = getList().find(x=>x.id===selId);
+const accent   = side===“our”?”#1D4ED8”:”#7C3AED”;
+
+const startGame = opp => {
+setGame({id:Date.now(),date:new Date().toLocaleDateString(),opponent:opp,ourHitters:[],theirHitters:[],ourPitchers:[],theirPitchers:[]});
+setScreen(“game”);
+};
+const endGame = () => { if(game) save([…games,game]); setGame(null); setScreen(“home”); };
+
+const addPerson = name => {
+const key=listKey(); const isPitch=subTab===“pitchers”;
+const obj=isPitch?{id:Date.now(),name,innings:{},notes:[],bullpen:isBullpen}:{id:Date.now(),name,atBats:[{pitches:[],notes:[],inning:1}]};
+upd({…game,[key]:[…getList(),obj]}); setSelId(obj.id);
+};
+
+// Hitter ops
+const addPitchH=(batterId,abIdx,pitch)=>upd({…game,[listKey()]:getList().map(b=>b.id!==batterId?b:{…b,atBats:b.atBats.map((ab,i)=>i!==abIdx?ab:{…ab,pitches:[…ab.pitches,pitch]})})});
+const addNoteH =(batterId,abIdx,note) =>upd({…game,[listKey()]:getList().map(b=>b.id!==batterId?b:{…b,atBats:b.atBats.map((ab,i)=>i!==abIdx?ab:{…ab,notes:[…ab.notes,note]})})});
+const newAtBat =(batterId,inning)     =>upd({…game,[listKey()]:getList().map(b=>b.id!==batterId?b:{…b,atBats:[…b.atBats,{pitches:[],notes:[],inning}]})});
+const undoHitter=(batterId,abIdx)     =>upd({…game,[listKey()]:getList().map(b=>b.id!==batterId?b:{…b,atBats:b.atBats.map((ab,i)=>i!==abIdx?ab:{…ab,pitches:ab.pitches.slice(0,-1)})})});
+
+// Pitcher ops
+const addPitchP=(pitcherId,pitch)=>{const inn=pitch.inning||1;upd({…game,[listKey()]:getList().map(p=>p.id!==pitcherId?p:{…p,innings:{…p.innings,[inn]:[…(p.innings[inn]||[]),pitch]}})});};
+const addNoteP =(pitcherId,note) =>upd({…game,[listKey()]:getList().map(p=>p.id!==pitcherId?p:{…p,notes:[…(p.notes||[]),note]})});
+const undoPitcher=(pitcherId,inning)=>upd({…game,[listKey()]:getList().map(p=>p.id!==pitcherId?p:{…p,innings:{…p.innings,[inning]:(p.innings[inning]||[]).slice(0,-1)}})});
+
+// Delete game
+const deleteGame = id => { const g=games.filter(x=>x.id!==id); save(g); setConfirmDel(null); };
+
+if (screen===“home”) return(
+<div style={{minHeight:“100vh”,background:”#0F172A”,color:“white”,fontFamily:”‘Trebuchet MS’,sans-serif”,padding:24}}>
+<div style={{maxWidth:520,margin:“0 auto”}}>
+<div style={{textAlign:“center”,marginBottom:28}}>
+<div style={{fontSize:40}}>⚾</div>
+<div style={{fontSize:26,fontWeight:800,letterSpacing:-1}}>BaseCharter</div>
+<div style={{color:”#64748B”,fontSize:13}}>Our Team & Opponent · Hitters & Pitchers</div>
+</div>
+<StartCard onStart={startGame}/>
+<button onClick={()=>setScreen(“history”)}
+style={{width:“100%”,marginTop:10,background:”#1E293B”,border:“1px solid #334155”,color:”#94A3B8”,borderRadius:12,padding:16,fontSize:14,cursor:“pointer”,textAlign:“left”}}>
+📋 Game History ({games.length})
+</button>
+<div style={{marginTop:12,background:”#1E293B”,borderRadius:10,padding:14}}>
+<div style={{color:”#64748B”,fontSize:10,marginBottom:8}}>PITCH COLOR LEGEND</div>
+<div style={{display:“flex”,flexWrap:“wrap”,gap:8}}>
+{PITCH_TYPES.map(pt=>(
+<div key={pt.id} style={{display:“flex”,alignItems:“center”,gap:5}}>
+<div style={{width:11,height:11,borderRadius:“50%”,background:pt.color}}/>
+<span style={{color:”#CBD5E1”,fontSize:12}}>{pt.label}</span>
+</div>
+))}
+</div>
+<div style={{marginTop:10,color:”#64748B”,fontSize:10}}>SPRAY CHART KEY</div>
+<div style={{display:“flex”,gap:16,marginTop:4}}>
+<div style={{color:”#94A3B8”,fontSize:11}}>● filled dot = Hit</div>
+<div style={{color:”#94A3B8”,fontSize:11}}>⊗ circle+X = Out</div>
+</div>
+</div>
+</div>
+</div>
+);
+
+if (screen===“history”) return(
+<div style={{minHeight:“100vh”,background:”#0F172A”,color:“white”,fontFamily:”‘Trebuchet MS’,sans-serif”,padding:20}}>
+<div style={{display:“flex”,alignItems:“center”,gap:12,marginBottom:20}}>
+<button onClick={()=>setScreen(“home”)} style={{background:”#1E293B”,border:“none”,color:”#94A3B8”,borderRadius:8,padding:“8px 14px”,cursor:“pointer”}}>← Back</button>
+<div style={{fontSize:18,fontWeight:700}}>Game History</div>
+</div>
+{games.length===0&&<div style={{color:”#475569”,textAlign:“center”,padding:40}}>No games saved yet</div>}
+{[…games].reverse().map(g=>(
+<div key={g.id} style={{background:”#1E293B”,borderRadius:12,padding:16,marginBottom:10,border:“1px solid #334155”,display:“flex”,alignItems:“center”,gap:10}}>
+<div style={{flex:1,cursor:“pointer”}} onClick={()=>setHistGame(g)}>
+<div style={{fontWeight:700,color:”#F1F5F9”}}>vs {g.opponent}</div>
+<div style={{color:”#64748B”,fontSize:13}}>{g.date} · {(g.ourHitters?.length||0)+(g.theirHitters?.length||0)} batters · {(g.ourPitchers?.length||0)+(g.theirPitchers?.length||0)} pitchers</div>
+</div>
+{confirmDel===g.id?(
+<div style={{display:“flex”,gap:6}}>
+<button onClick={()=>deleteGame(g.id)} style={{background:”#7F1D1D”,border:“none”,color:”#FCA5A5”,borderRadius:6,padding:“6px 10px”,fontSize:12,cursor:“pointer”,fontWeight:700}}>Delete</button>
+<button onClick={()=>setConfirmDel(null)} style={{background:”#334155”,border:“none”,color:”#94A3B8”,borderRadius:6,padding:“6px 10px”,fontSize:12,cursor:“pointer”}}>Cancel</button>
+</div>
+):(
+<button onClick={()=>setConfirmDel(g.id)} style={{background:“none”,border:“1px solid #334155”,color:”#64748B”,borderRadius:6,padding:“6px 10px”,fontSize:12,cursor:“pointer”}}>🗑</button>
+)}
+</div>
+))}
+{histGame&&<ReportModal game={histGame} onClose={()=>setHistGame(null)}/>}
+</div>
+);
+
+return(
+<div style={{minHeight:“100vh”,background:”#0F172A”,color:“white”,fontFamily:”‘Trebuchet MS’,sans-serif”,display:“flex”,flexDirection:“column”}}>
+<div style={{background:”#1E293B”,borderBottom:“1px solid #334155”,padding:“10px 14px”,display:“flex”,alignItems:“center”,gap:8,flexWrap:“wrap”}}>
+<button onClick={()=>setSidebarOpen(true)} style={{background:”#334155”,border:“none”,color:“white”,borderRadius:8,padding:“8px 13px”,fontSize:15,cursor:“pointer”}}>☰</button>
+<div style={{flex:1,fontWeight:700,fontSize:14}}>vs {game?.opponent}</div>
+<div style={{display:“flex”,background:”#0F172A”,borderRadius:8,padding:3,gap:2}}>
+{[[“our”,“🏠 Our”,”#1D4ED8”],[“their”,“👁 Opp”,”#7C3AED”]].map(([s,lbl,col])=>(
+<button key={s} onClick={()=>setSide(s)}
+style={{padding:“6px 12px”,borderRadius:6,border:“none”,fontSize:12,fontWeight:700,cursor:“pointer”,background:side===s?col:“transparent”,color:side===s?“white”:”#64748B”}}>
+{lbl}
+</button>
+))}
+</div>
+<div style={{display:“flex”,background:”#0F172A”,borderRadius:8,padding:3,gap:2}}>
+{[[“hitters”,“🏏”],[“pitchers”,“⚾”]].map(([t,lbl])=>(
+<button key={t} onClick={()=>setSubTab(t)}
+style={{padding:“6px 11px”,borderRadius:6,border:“none”,fontSize:13,fontWeight:700,cursor:“pointer”,background:subTab===t?accent:“transparent”,color:subTab===t?“white”:”#64748B”}}>
+{lbl} {t.charAt(0).toUpperCase()+t.slice(1)}
+</button>
+))}
+</div>
+<button onClick={()=>setShowReport(true)} style={{background:”#065F46”,border:“none”,color:“white”,borderRadius:8,padding:“8px 11px”,fontSize:12,fontWeight:700,cursor:“pointer”}}>📄</button>
+<button onClick={endGame} style={{background:”#7F1D1D”,border:“none”,color:”#FCA5A5”,borderRadius:8,padding:“8px 11px”,fontSize:12,fontWeight:700,cursor:“pointer”}}>End</button>
+</div>
+
+```
+  <div style={{padding:"7px 14px",background:"#0F172A",borderBottom:"1px solid #1E293B",display:"flex",alignItems:"center",gap:8}}>
+    <div style={{color:accent,fontWeight:700,fontSize:13}}>{side==="our"?"Our Team":"Opponent"} — {subTab==="hitters"?"Hitters":"Pitchers"}</div>
+    {current&&<span style={{color:"#475569",fontSize:12}}>· {current.name}</span>}
+  </div>
+
+  <div style={{flex:1,padding:14,overflowY:"auto"}}>
+    {!current?(
+      <div style={{textAlign:"center",padding:60,color:"#475569"}}>
+        <div style={{fontSize:38,marginBottom:10}}>{subTab==="hitters"?"🏏":"⚾"}</div>
+        <div style={{fontSize:14}}>Open ☰ to select a {subTab==="hitters"?"batter":"pitcher"}</div>
+      </div>
+    ):subTab==="hitters"?(
+      <HitterView key={current.id} batter={current} accent={accent}
+        onPitch={(abIdx,p)=>addPitchH(current.id,abIdx,p)}
+        onNote={(abIdx,n)=>addNoteH(current.id,abIdx,n)}
+        onNewAB={inn=>newAtBat(current.id,inn)}
+        onUndo={abIdx=>undoHitter(current.id,abIdx)}/>
+    ):(
+      <PitcherView key={current.id} pitcher={current} accent={accent}
+        onPitch={p=>addPitchP(current.id,p)}
+        onNote={n=>addNoteP(current.id,n)}
+        onUndo={inning=>undoPitcher(current.id,inning)}/>
+    )}
+  </div>
+
+  {sidebarOpen&&<Sidebar game={game} side={side} subTab={subTab} selectedId={selId} onSelect={setSelId} onClose={()=>setSidebarOpen(false)} onAdd={addPerson} isBullpen={isBullpen} setIsBullpen={setIsBullpen}/>}
+  {showReport&&game&&<ReportModal game={game} onClose={()=>setShowReport(false)}/>}
+</div>
+```
+
+);
+}
+
+function StartCard({ onStart }) {
+const [opp,setOpp]=useState(””); const [open,setOpen]=useState(false);
+if (!open) return <button onClick={()=>setOpen(true)} style={{width:“100%”,background:”#1D4ED8”,border:“none”,color:“white”,borderRadius:12,padding:18,fontSize:17,fontWeight:800,cursor:“pointer”}}>⚾ Start New Game</button>;
+return(
+<div style={{background:”#1E293B”,borderRadius:12,padding:16,border:“1px solid #1D4ED8”}}>
+<input value={opp} onChange={e=>setOpp(e.target.value)} placeholder=“Opponent name…”
+style={{width:“100%”,background:”#0F172A”,border:“1px solid #334155”,color:”#E2E8F0”,borderRadius:8,padding:“10px 12px”,fontSize:15,marginBottom:10,boxSizing:“border-box”}}/>
+<button onClick={()=>opp.trim()&&onStart(opp.trim())} disabled={!opp.trim()}
+style={{width:“100%”,background:”#1D4ED8”,border:“none”,color:“white”,borderRadius:8,padding:12,fontSize:15,fontWeight:700,cursor:“pointer”,opacity:opp.trim()?1:0.5}}>
+Start →
+</button>
+</div>
+);
+}
+
+const root = ReactDOM.createRoot(document.getElementById(‘root’));
+root.render(<App/>);
+</script>
+
+</body>
+</html>
